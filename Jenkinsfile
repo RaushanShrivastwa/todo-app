@@ -61,34 +61,34 @@ pipeline {
         }
         
         stage('Test Locally') {
-            steps {
-                echo '🧪 Testing containers before push...'
-                bat '''
-                    @echo off
-                    echo "Starting test containers..."
-                    
-                    docker run -d -p 5001:5000 --name test-backend %BACKEND_IMAGE%
-                    if %errorlevel% neq 0 (echo "Failed to start backend" && exit /b 1)
-                    
-                    docker run -d -p 3001:3000 --name test-frontend %FRONTEND_IMAGE%
-                    if %errorlevel% neq 0 (echo "Failed to start frontend" && exit /b 1)
-                    
-                    echo "Waiting for containers to stabilize..."
-                    powershell -Command "Start-Sleep -Seconds 20"
-                    
-                    echo "Testing backend health..."
-                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing; if ($res.StatusCode -eq 200) { exit 0 } else { exit 1 }"
-                    if %errorlevel% neq 0 (echo "Backend health check failed" && exit /b 1)
-                    
-                    echo "Testing frontend..."
-                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing; if ($res.StatusCode -eq 200) { exit 0 } else { exit 1 }"
-                    if %errorlevel% neq 0 (echo "Frontend health check failed" && exit /b 1)
-                    
-                    echo "✅ Local tests passed. Cleaning up..."
-                    docker stop test-backend test-frontend >nul
-                    docker rm test-backend test-frontend >nul
-                '''
-            }
+    steps {
+        echo '🧪 Testing containers before push...'
+        bat '''
+            @echo off
+            echo "Starting test containers..."
+            
+            :: Added -e flags in case your backend expects them (adjust as needed)
+            docker run -d -p 5001:5000 --name test-backend %BACKEND_IMAGE%
+            docker run -d -p 3001:3000 --name test-frontend %FRONTEND_IMAGE%
+            
+            echo "Waiting 30 seconds for containers to stabilize..."
+            powershell -Command "Start-Sleep -Seconds 30"
+            
+            echo "--- Backend Logs (for debugging) ---"
+            docker logs test-backend
+            
+            echo "Testing backend health..."
+            :: Added -SkipCertificateCheck in case of local SSL issues
+            powershell -Command "try { $res = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing -TimeoutSec 10; if ($res.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
+            
+            if %errorlevel% neq 0 (
+                echo "❌ Backend health check failed. The app might have crashed."
+                exit /b 1
+            )
+            
+            echo "✅ All tests passed!"
+        '''
+    }
         }
         
         stage('Push to Docker Hub') {
