@@ -60,41 +60,42 @@ pipeline {
             }
         }
         
-        stage('Test Locally') {
+stage('Test Locally') {
     steps {
-        echo '🧪 Testing containers with MongoDB Atlas...'
         script {
-            // This pulls the secret string from Jenkins settings
-            withCredentials([string(credentialsId: 'mongodb-uri', variable: 'ATLAS_URI')]) {
+            withCredentials([string(credentialsId: 'mongodb-uri', variable: 'MONGODB_URI')]) {
                 bat '''
                     @echo off
-                    echo "Starting test containers..."
+                    echo "Starting test containers with MongoDB Atlas..."
                     
-                    :: Pass the Atlas URI to the backend container
-                    :: Adjust the '-e' variable name (MONGODB_URI) to match what your code uses
-                    docker run -d -p 5001:5000 --name test-backend -e MONGODB_URI="%ATLAS_URI%" %BACKEND_IMAGE%
+                    docker stop test-backend test-frontend 2>nul
+                    docker rm test-backend test-frontend 2>nul
                     
-                    docker run -d -p 3001:3000 --name test-frontend %FRONTEND_IMAGE%
+                    echo "Using MongoDB URI from Jenkins credentials"
                     
-                    echo "Waiting 20 seconds for Atlas connection..."
-                    powershell -Command "Start-Sleep -Seconds 20"
+                    docker run -d -p 5001:5000 -e MONGODB_URI=%MONGODB_URI% --name test-backend raushann09/todo-backend:%IMAGE_TAG%
+                    docker run -d -p 3001:3000 --name test-frontend raushann09/todo-frontend:%IMAGE_TAG%
                     
-                    echo "--- Backend Logs ---"
-                    docker logs test-backend
+                    echo "Waiting 25 seconds for containers to initialize..."
+                    timeout /t 25 /nobreak >nul
                     
                     echo "Testing backend health..."
-                    powershell -Command "try { $res = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing; exit 0 } catch { exit 1 }"
-                    
+                    powershell -Command "try { $res = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing -TimeoutSec 10; if ($res.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend returned ' $res.StatusCode; exit 1 } } catch { Write-Host '❌ Backend not responding'; exit 1 }"
                     if %errorlevel% neq 0 (
-                        echo "❌ Backend health check failed. Check Atlas IP Whitelist!"
+                        echo "Backend logs:"
+                        docker logs test-backend
                         exit /b 1
                     )
-                    echo "✅ Connection to Atlas Successful!"
+                    
+                    echo "✅ Backend test passed"
+                    
+                    docker stop test-backend test-frontend
+                    docker rm test-backend test-frontend
                 '''
             }
         }
     }
-        }
+}
         stage('Push to Docker Hub') {
             steps {
                 script {
