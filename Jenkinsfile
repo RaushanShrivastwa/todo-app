@@ -17,13 +17,18 @@ pipeline {
             steps {
                 echo '🧹 Cleaning up old test containers...'
                 bat '''
+                    @echo off
                     echo "Stopping and removing any existing test containers..."
-                    docker stop test-backend test-frontend 2>nul || true
-                    docker rm test-backend test-frontend 2>nul || true
+                    
+                    docker stop test-backend 2>nul
+                    docker stop test-frontend 2>nul
+                    
+                    docker rm test-backend 2>nul
+                    docker rm test-frontend 2>nul
                     
                     echo "Checking if ports are available..."
-                    netstat -ano | findstr :5001 || echo "Port 5001 is free"
-                    netstat -ano | findstr :3001 || echo "Port 3001 is free"
+                    netstat -ano | findstr :5001 >nul && echo "Port 5001 is in use" || echo "Port 5001 is free"
+                    netstat -ano | findstr :3001 >nul && echo "Port 3001 is in use" || echo "Port 3001 is free"
                 '''
             }
         }
@@ -60,30 +65,44 @@ pipeline {
             steps {
                 echo '🧪 Testing containers before push...'
                 bat '''
+                    @echo off
                     echo "Starting test containers..."
                     
-                    # Make sure no old containers are running
-                    docker stop test-backend test-frontend 2>nul || true
-                    docker rm test-backend test-frontend 2>nul || true
+                    :: Make sure no old containers are running
+                    docker stop test-backend 2>nul
+                    docker stop test-frontend 2>nul
+                    docker rm test-backend 2>nul
+                    docker rm test-frontend 2>nul
                     
-                    # Run new test containers
+                    :: Run new test containers
                     docker run -d -p 5001:5000 --name test-backend %BACKEND_IMAGE%
+                    if %errorlevel% neq 0 (
+                        echo "Failed to start backend container"
+                        exit /b 1
+                    )
+                    
                     docker run -d -p 3001:3000 --name test-frontend %FRONTEND_IMAGE%
+                    if %errorlevel% neq 0 (
+                        echo "Failed to start frontend container"
+                        exit /b 1
+                    )
                     
                     echo "Waiting 20 seconds for containers to start..."
                     powershell -Command "Start-Sleep -Seconds 20"
                     
                     echo "Testing backend health..."
-                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend returned status ' $response.StatusCode; exit 1 } } catch { Write-Host '❌ Backend connection failed: ' $_.Exception.Message; exit 1 }"
+                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend failed'; exit 1 }"
                     if %errorlevel% neq 0 exit /b %errorlevel%
                     
                     echo "Testing frontend..."
-                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend healthy'; exit 0 } else { Write-Host '❌ Frontend returned status ' $response.StatusCode; exit 1 } } catch { Write-Host '❌ Frontend connection failed: ' $_.Exception.Message; exit 1 }"
+                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend healthy'; exit 0 } else { Write-Host '❌ Frontend failed'; exit 1 }"
                     if %errorlevel% neq 0 exit /b %errorlevel%
                     
                     echo "✅ All tests passed! Cleaning up test containers..."
-                    docker stop test-backend test-frontend
-                    docker rm test-backend test-frontend
+                    docker stop test-backend
+                    docker stop test-frontend
+                    docker rm test-backend
+                    docker rm test-frontend
                 '''
             }
         }
@@ -97,9 +116,22 @@ pipeline {
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
                         bat '''
+                            @echo off
                             echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+                            if %errorlevel% neq 0 (
+                                echo "Docker login failed"
+                                exit /b %errorlevel%
+                            )
+                            
+                            echo "Pushing frontend image..."
                             docker push %FRONTEND_IMAGE%
+                            if %errorlevel% neq 0 exit /b %errorlevel%
+                            
+                            echo "Pushing backend image..."
                             docker push %BACKEND_IMAGE%
+                            if %errorlevel% neq 0 exit /b %errorlevel%
+                            
+                            echo "Pushing latest tags..."
                             docker push %LATEST_FRONTEND%
                             docker push %LATEST_BACKEND%
                         '''
@@ -113,8 +145,15 @@ pipeline {
                 echo '🚀 Deploying application...'
                 dir('C:\\Users\\Raushan\\Desktop\\Project') {
                     bat '''
+                        @echo off
+                        echo "Stopping existing deployment..."
                         docker-compose down
+                        
+                        echo "Starting new deployment..."
                         docker-compose up -d
+                        
+                        echo "Waiting for containers to start..."
+                        timeout /t 15 /nobreak >nul
                     '''
                 }
             }
@@ -124,14 +163,13 @@ pipeline {
             steps {
                 echo '🏥 Verifying deployment...'
                 bat '''
-                    powershell -Command "Start-Sleep -Seconds 15"
-                    
+                    @echo off
                     echo "Checking backend health..."
-                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:5000/health -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend failed'; exit 1 } } catch { Write-Host '❌ Backend connection failed'; exit 1 }"
+                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:5000/health -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend failed'; exit 1 }"
                     if %errorlevel% neq 0 exit /b %errorlevel%
                     
                     echo "Checking frontend..."
-                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend running'; exit 0 } else { Write-Host '❌ Frontend failed'; exit 1 } } catch { Write-Host '❌ Frontend connection failed'; exit 1 }"
+                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend running'; exit 0 } else { Write-Host '❌ Frontend failed'; exit 1 }"
                     if %errorlevel% neq 0 exit /b %errorlevel%
                     
                     echo "✅ Application is running at http://localhost:3000"
@@ -151,9 +189,10 @@ pipeline {
         always {
             echo '🧹 Final cleanup...'
             bat '''
-                docker stop test-backend test-frontend 2>nul || true
-                docker rm test-backend test-frontend 2>nul || true
-                docker system prune -f || true
+                @echo off
+                docker stop test-backend test-frontend 2>nul
+                docker rm test-backend test-frontend 2>nul
+                docker system prune -f >nul
             '''
         }
     }
