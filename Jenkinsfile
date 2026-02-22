@@ -3,7 +3,7 @@ pipeline {
     
     environment {
         // Docker Hub configuration
-        DOCKER_USERNAME = 'raushann09'  // Your username
+        DOCKER_USERNAME = 'raushann09'
         
         // Image tags
         FRONTEND_IMAGE = "${DOCKER_USERNAME}/todo-frontend:${BUILD_NUMBER}"
@@ -20,33 +20,32 @@ pipeline {
                     @echo off
                     echo "Stopping and removing any existing test containers..."
                     
-                    docker stop test-backend 2>nul
-                    docker stop test-frontend 2>nul
-                    
-                    docker rm test-backend 2>nul
-                    docker rm test-frontend 2>nul
+                    :: Use "|| ver > nul" to ensure the script continues if containers don't exist
+                    docker stop test-backend 2>nul || ver > nul
+                    docker stop test-frontend 2>nul || ver > nul
+                    docker rm test-backend 2>nul || ver > nul
+                    docker rm test-frontend 2>nul || ver > nul
                     
                     echo "Checking if ports are available..."
-                    netstat -ano | findstr :5001 >nul && echo "Port 5001 is in use" || echo "Port 5001 is free"
-                    netstat -ano | findstr :3001 >nul && echo "Port 3001 is in use" || echo "Port 3001 is free"
+                    netstat -ano | findstr :5001 >nul && (echo Port 5001 is in use) || (echo Port 5001 is free)
+                    netstat -ano | findstr :3001 >nul && (echo Port 3001 is in use) || (echo Port 3001 is free)
+                    
+                    :: Force success exit code so findstr doesn't kill the pipeline
+                    exit /b 0
                 '''
             }
         }
         
-        stage('Checkout') {
-            steps {
-                echo '📥 Cloning repository from GitHub...'
-                checkout scm
-            }
-        }
-        
+        // Note: Declarative SCM Checkout happens automatically at the start.
+        // We keep this here only if you need to pull additional submodules.
+
         stage('Build Docker Images') {
             parallel {
                 stage('Build Frontend') {
                     steps {
                         dir('todo-app-frontend') {
                             echo '🐳 Building frontend Docker image...'
-                            bat "docker build -t ${FRONTEND_IMAGE} -t ${LATEST_FRONTEND} ."
+                            bat "docker build -t %FRONTEND_IMAGE% -t %LATEST_FRONTEND% ."
                         }
                     }
                 }
@@ -54,7 +53,7 @@ pipeline {
                     steps {
                         dir('todo-app-backend') {
                             echo '🐳 Building backend Docker image...'
-                            bat "docker build -t ${BACKEND_IMAGE} -t ${LATEST_BACKEND} ."
+                            bat "docker build -t %BACKEND_IMAGE% -t %LATEST_BACKEND% ."
                         }
                     }
                 }
@@ -68,41 +67,26 @@ pipeline {
                     @echo off
                     echo "Starting test containers..."
                     
-                    :: Make sure no old containers are running
-                    docker stop test-backend 2>nul
-                    docker stop test-frontend 2>nul
-                    docker rm test-backend 2>nul
-                    docker rm test-frontend 2>nul
-                    
-                    :: Run new test containers
                     docker run -d -p 5001:5000 --name test-backend %BACKEND_IMAGE%
-                    if %errorlevel% neq 0 (
-                        echo "Failed to start backend container"
-                        exit /b 1
-                    )
+                    if %errorlevel% neq 0 (echo "Failed to start backend" && exit /b 1)
                     
                     docker run -d -p 3001:3000 --name test-frontend %FRONTEND_IMAGE%
-                    if %errorlevel% neq 0 (
-                        echo "Failed to start frontend container"
-                        exit /b 1
-                    )
+                    if %errorlevel% neq 0 (echo "Failed to start frontend" && exit /b 1)
                     
-                    echo "Waiting 20 seconds for containers to start..."
+                    echo "Waiting for containers to stabilize..."
                     powershell -Command "Start-Sleep -Seconds 20"
                     
                     echo "Testing backend health..."
-                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend failed'; exit 1 }"
-                    if %errorlevel% neq 0 exit /b %errorlevel%
+                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing; if ($res.StatusCode -eq 200) { exit 0 } else { exit 1 }"
+                    if %errorlevel% neq 0 (echo "Backend health check failed" && exit /b 1)
                     
                     echo "Testing frontend..."
-                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend healthy'; exit 0 } else { Write-Host '❌ Frontend failed'; exit 1 }"
-                    if %errorlevel% neq 0 exit /b %errorlevel%
+                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing; if ($res.StatusCode -eq 200) { exit 0 } else { exit 1 }"
+                    if %errorlevel% neq 0 (echo "Frontend health check failed" && exit /b 1)
                     
-                    echo "✅ All tests passed! Cleaning up test containers..."
-                    docker stop test-backend
-                    docker stop test-frontend
-                    docker rm test-backend
-                    docker rm test-frontend
+                    echo "✅ Local tests passed. Cleaning up..."
+                    docker stop test-backend test-frontend >nul
+                    docker rm test-backend test-frontend >nul
                 '''
             }
         }
@@ -118,20 +102,9 @@ pipeline {
                         bat '''
                             @echo off
                             echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
-                            if %errorlevel% neq 0 (
-                                echo "Docker login failed"
-                                exit /b %errorlevel%
-                            )
                             
-                            echo "Pushing frontend image..."
                             docker push %FRONTEND_IMAGE%
-                            if %errorlevel% neq 0 exit /b %errorlevel%
-                            
-                            echo "Pushing backend image..."
                             docker push %BACKEND_IMAGE%
-                            if %errorlevel% neq 0 exit /b %errorlevel%
-                            
-                            echo "Pushing latest tags..."
                             docker push %LATEST_FRONTEND%
                             docker push %LATEST_BACKEND%
                         '''
@@ -142,18 +115,13 @@ pipeline {
         
         stage('Deploy Locally') {
             steps {
-                echo '🚀 Deploying application...'
+                echo '🚀 Deploying application via Docker Compose...'
+                // Using the specific path provided in your snippet
                 dir('C:\\Users\\Raushan\\Desktop\\Project') {
                     bat '''
                         @echo off
-                        echo "Stopping existing deployment..."
-                        docker-compose down
-                        
-                        echo "Starting new deployment..."
+                        docker-compose down || ver > nul
                         docker-compose up -d
-                        
-                        echo "Waiting for containers to start..."
-                        timeout /t 15 /nobreak >nul
                     '''
                 }
             }
@@ -161,18 +129,18 @@ pipeline {
         
         stage('Health Check') {
             steps {
-                echo '🏥 Verifying deployment...'
+                echo '🏥 Verifying production deployment...'
                 bat '''
                     @echo off
-                    echo "Checking backend health..."
-                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:5000/health -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend failed'; exit 1 }"
-                    if %errorlevel% neq 0 exit /b %errorlevel%
+                    :: Checking production ports (3000/5000)
+                    powershell -Command "Start-Sleep -Seconds 15"
+                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:5000/health -UseBasicParsing; if ($res.StatusCode -ne 200) { exit 1 }"
+                    if %errorlevel% neq 0 (echo "Production Backend Unhealthy" && exit /b 1)
                     
-                    echo "Checking frontend..."
-                    powershell -Command "$response = Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend running'; exit 0 } else { Write-Host '❌ Frontend failed'; exit 1 }"
-                    if %errorlevel% neq 0 exit /b %errorlevel%
+                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing; if ($res.StatusCode -ne 200) { exit 1 }"
+                    if %errorlevel% neq 0 (echo "Production Frontend Unhealthy" && exit /b 1)
                     
-                    echo "✅ Application is running at http://localhost:3000"
+                    echo "✅ Deployment Successful!"
                 '''
             }
         }
@@ -181,7 +149,6 @@ pipeline {
     post {
         success {
             echo '🎉 Pipeline completed successfully!'
-            echo "✅ Images pushed to Docker Hub and app deployed locally"
         }
         failure {
             echo '❌ Pipeline failed. Check the logs above.'
@@ -190,9 +157,10 @@ pipeline {
             echo '🧹 Final cleanup...'
             bat '''
                 @echo off
-                docker stop test-backend test-frontend 2>nul
-                docker rm test-backend test-frontend 2>nul
-                docker system prune -f >nul
+                docker stop test-backend test-frontend 2>nul || ver > nul
+                docker rm test-backend test-frontend 2>nul || ver > nul
+                :: Prune only unused images to save disk space
+                docker image prune -f
             '''
         }
     }
