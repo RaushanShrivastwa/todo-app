@@ -13,6 +13,21 @@ pipeline {
     }
     
     stages {
+        stage('Cleanup Old Containers') {
+            steps {
+                echo '🧹 Cleaning up old test containers...'
+                bat '''
+                    echo "Stopping and removing any existing test containers..."
+                    docker stop test-backend test-frontend 2>nul || true
+                    docker rm test-backend test-frontend 2>nul || true
+                    
+                    echo "Checking if ports are available..."
+                    netstat -ano | findstr :5001 || echo "Port 5001 is free"
+                    netstat -ano | findstr :3001 || echo "Port 3001 is free"
+                '''
+            }
+        }
+        
         stage('Checkout') {
             steps {
                 echo '📥 Cloning repository from GitHub...'
@@ -46,11 +61,17 @@ pipeline {
                 echo '🧪 Testing containers before push...'
                 bat '''
                     echo "Starting test containers..."
+                    
+                    # Make sure no old containers are running
+                    docker stop test-backend test-frontend 2>nul || true
+                    docker rm test-backend test-frontend 2>nul || true
+                    
+                    # Run new test containers
                     docker run -d -p 5001:5000 --name test-backend %BACKEND_IMAGE%
                     docker run -d -p 3001:3000 --name test-frontend %FRONTEND_IMAGE%
                     
-                    echo "Waiting 15 seconds for containers to start..."
-                    powershell -Command "Start-Sleep -Seconds 15"
+                    echo "Waiting 20 seconds for containers to start..."
+                    powershell -Command "Start-Sleep -Seconds 20"
                     
                     echo "Testing backend health..."
                     powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend returned status ' $response.StatusCode; exit 1 } } catch { Write-Host '❌ Backend connection failed: ' $_.Exception.Message; exit 1 }"
@@ -60,7 +81,7 @@ pipeline {
                     powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend healthy'; exit 0 } else { Write-Host '❌ Frontend returned status ' $response.StatusCode; exit 1 } } catch { Write-Host '❌ Frontend connection failed: ' $_.Exception.Message; exit 1 }"
                     if %errorlevel% neq 0 exit /b %errorlevel%
                     
-                    echo "Cleaning up test containers..."
+                    echo "✅ All tests passed! Cleaning up test containers..."
                     docker stop test-backend test-frontend
                     docker rm test-backend test-frontend
                 '''
@@ -103,14 +124,17 @@ pipeline {
             steps {
                 echo '🏥 Verifying deployment...'
                 bat '''
-                    powershell -Command "Start-Sleep -Seconds 10"
-                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:5000/health -UseBasicParsing; if ($response.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
-                    if %errorlevel% neq 0 exit /b %errorlevel%
-                    echo ✅ Backend is healthy
+                    powershell -Command "Start-Sleep -Seconds 15"
                     
-                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing; if ($response.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
+                    echo "Checking backend health..."
+                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:5000/health -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } else { Write-Host '❌ Backend failed'; exit 1 } } catch { Write-Host '❌ Backend connection failed'; exit 1 }"
                     if %errorlevel% neq 0 exit /b %errorlevel%
-                    echo ✅ Frontend is running
+                    
+                    echo "Checking frontend..."
+                    powershell -Command "try { $response = Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing; if ($response.StatusCode -eq 200) { Write-Host '✅ Frontend running'; exit 0 } else { Write-Host '❌ Frontend failed'; exit 1 } } catch { Write-Host '❌ Frontend connection failed'; exit 1 }"
+                    if %errorlevel% neq 0 exit /b %errorlevel%
+                    
+                    echo "✅ Application is running at http://localhost:3000"
                 '''
             }
         }
@@ -119,14 +143,18 @@ pipeline {
     post {
         success {
             echo '🎉 Pipeline completed successfully!'
-            echo "✅ App is running at http://localhost:3000"
+            echo "✅ Images pushed to Docker Hub and app deployed locally"
         }
         failure {
             echo '❌ Pipeline failed. Check the logs above.'
         }
         always {
-            echo '🧹 Cleaning up...'
-            bat 'docker system prune -f || true'
+            echo '🧹 Final cleanup...'
+            bat '''
+                docker stop test-backend test-frontend 2>nul || true
+                docker rm test-backend test-frontend 2>nul || true
+                docker system prune -f || true
+            '''
         }
     }
 }
