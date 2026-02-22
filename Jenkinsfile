@@ -1,169 +1,203 @@
-```groovy
 pipeline {
     agent any
     
     environment {
-        // Docker Hub configuration
         DOCKER_USERNAME = 'raushann09'
-        
-        // Image tags
-        FRONTEND_IMAGE = "${DOCKER_USERNAME}/todo-frontend:${BUILD_NUMBER}"
-        BACKEND_IMAGE  = "${DOCKER_USERNAME}/todo-backend:${BUILD_NUMBER}"
-        LATEST_FRONTEND = "${DOCKER_USERNAME}/todo-frontend:latest"
-        LATEST_BACKEND  = "${DOCKER_USERNAME}/todo-backend:latest"
+        IMAGE_TAG = "${BUILD_NUMBER}"
     }
     
     stages {
-
-        stage('Cleanup Old Containers') {
+        stage('Cleanup') {
             steps {
-                echo '🧹 Cleaning up old test containers...'
                 bat '''
-                    @echo off
-                    docker stop test-backend 2>nul || ver > nul
-                    docker stop test-frontend 2>nul || ver > nul
-                    docker rm test-backend 2>nul || ver > nul
-                    docker rm test-frontend 2>nul || ver > nul
-
-                    netstat -ano | findstr :5001 >nul && (echo Port 5001 in use) || (echo Port 5001 free)
-                    netstat -ano | findstr :3001 >nul && (echo Port 3001 in use) || (echo Port 3001 free)
-
-                    exit /b 0
+                    docker stop test-backend test-frontend 2>nul
+                    docker rm test-backend test-frontend 2>nul
                 '''
             }
         }
-
-        stage('Build Docker Images') {
+        
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build Images') {
             parallel {
-
                 stage('Build Frontend') {
                     steps {
                         dir('todo-app-frontend') {
-                            echo '🐳 Building frontend Docker image...'
-                            bat "docker build -t %FRONTEND_IMAGE% -t %LATEST_FRONTEND% ."
+                            bat "docker build -t ${DOCKER_USERNAME}/todo-frontend:${IMAGE_TAG} -t ${DOCKER_USERNAME}/todo-frontend:latest ."
                         }
                     }
                 }
-
                 stage('Build Backend') {
                     steps {
                         dir('todo-app-backend') {
-                            echo '🐳 Building backend Docker image...'
-                            bat "docker build -t %BACKEND_IMAGE% -t %LATEST_BACKEND% ."
+                            bat "docker build -t ${DOCKER_USERNAME}/todo-backend:${IMAGE_TAG} -t ${DOCKER_USERNAME}/todo-backend:latest ."
                         }
                     }
                 }
             }
         }
-
+        
         stage('Test Locally') {
             steps {
                 script {
                     withCredentials([string(credentialsId: 'mongodb-uri', variable: 'MONGODB_URI')]) {
                         bat '''
                             @echo off
-                            echo "Starting test containers..."
-
+                            echo "========================================="
+                            echo "🧪 Testing containers with MongoDB Atlas"
+                            echo "========================================="
+                            
+                            :: Clean up any old test containers
+                            echo "Cleaning up old containers..."
                             docker stop test-backend test-frontend 2>nul
                             docker rm test-backend test-frontend 2>nul
-
-                            echo "Using MongoDB URI from Jenkins credentials"
-
-                            docker run -d -p 5001:5000 -e MONGODB_URI=%MONGODB_URI% --name test-backend %BACKEND_IMAGE%
-                            docker run -d -p 3001:3000 --name test-frontend %FRONTEND_IMAGE%
-
-                            echo "Waiting 25 seconds for containers..."
-                            powershell -Command "Start-Sleep -Seconds 25"
-
-                            echo "Testing backend health..."
-                            powershell -Command "try { $res = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing -TimeoutSec 10; if ($res.StatusCode -eq 200) { Write-Host 'Backend healthy'; exit 0 } else { exit 1 } } catch { Write-Host 'Backend not responding'; exit 1 }"
-
+                            
+                            :: Run new test containers with MongoDB URI
+                            echo "Starting backend container with MongoDB Atlas..."
+                            docker run -d -p 5001:5000 -e MONGODB_URI=%MONGODB_URI% --name test-backend raushann09/todo-backend:%IMAGE_TAG%
+                            
+                            echo "Starting frontend container..."
+                            docker run -d -p 3001:3000 --name test-frontend raushann09/todo-frontend:%IMAGE_TAG%
+                            
+                            echo "Waiting 25 seconds for containers to initialize..."
+                            timeout /t 25 /nobreak >nul
+                            
+                            :: Check if backend container is still running
+                            echo "Checking backend container status..."
+                            docker ps | findstr test-backend >nul
                             if %errorlevel% neq 0 (
-                                echo "Backend logs:"
+                                echo "❌ Backend container crashed! Showing logs:"
+                                echo "----------------------------------------"
                                 docker logs test-backend
+                                echo "----------------------------------------"
                                 exit /b 1
                             )
-
-                            echo "Backend test passed"
-
+                            
+                            :: Test backend health endpoint
+                            echo "Testing backend health endpoint..."
+                            powershell -Command "$retryCount = 0; while ($retryCount -lt 3) { try { $res = Invoke-WebRequest -Uri http://localhost:5001/health -UseBasicParsing -TimeoutSec 5; if ($res.StatusCode -eq 200) { Write-Host '✅ Backend healthy'; exit 0 } } catch { $retryCount++; Write-Host \"Retry $retryCount/3...\"; Start-Sleep -Seconds 5 } } exit 1"
+                            
+                            if %errorlevel% neq 0 (
+                                echo "❌ Backend health check failed after retries"
+                                echo "Backend logs:"
+                                echo "----------------------------------------"
+                                docker logs test-backend
+                                echo "----------------------------------------"
+                                exit /b 1
+                            )
+                            
+                            echo "✅ All tests passed! Cleaning up..."
+                            
+                            :: Clean up test containers
                             docker stop test-backend test-frontend
                             docker rm test-backend test-frontend
+                            
+                            echo "========================================="
+                            echo "✅ Test stage completed successfully"
+                            echo "========================================="
                         '''
                     }
                 }
             }
         }
-
+        
         stage('Push to Docker Hub') {
             steps {
-                script {
-                    withCredentials([usernamePassword(
-                        credentialsId: 'docker-hub-credentials',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        bat '''
-                            @echo off
-                            echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
-
-                            docker push %FRONTEND_IMAGE%
-                            docker push %BACKEND_IMAGE%
-                            docker push %LATEST_FRONTEND%
-                            docker push %LATEST_BACKEND%
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Deploy Locally') {
-            steps {
-                echo '🚀 Deploying application via Docker Compose...'
-                dir('C:\\Users\\Raushan\\Desktop\\Project') {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-credentials',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
                     bat '''
                         @echo off
-                        docker-compose down || ver > nul
-                        docker-compose up -d
+                        echo "========================================="
+                        echo "📤 Pushing images to Docker Hub"
+                        echo "========================================="
+                        
+                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+                        if %errorlevel% neq 0 (
+                            echo "❌ Docker login failed"
+                            exit /b %errorlevel%
+                        )
+                        
+                        echo "Pushing frontend image..."
+                        docker push raushann09/todo-frontend:%IMAGE_TAG%
+                        docker push raushann09/todo-frontend:latest
+                        
+                        echo "Pushing backend image..."
+                        docker push raushann09/todo-backend:%IMAGE_TAG%
+                        docker push raushann09/todo-backend:latest
+                        
+                        echo "✅ All images pushed successfully"
                     '''
                 }
             }
         }
-
-        stage('Health Check') {
+        
+        stage('Deploy Locally') {
             steps {
-                echo '🏥 Verifying production deployment...'
+                dir('C:\\Users\\Raushan\\Desktop\\Project') {
+                    bat '''
+                        @echo off
+                        echo "========================================="
+                        echo "🚀 Deploying application locally"
+                        echo "========================================="
+                        
+                        echo "Stopping existing deployment..."
+                        docker-compose down
+                        
+                        echo "Starting new deployment..."
+                        docker-compose up -d
+                        
+                        echo "Waiting for containers to start..."
+                        timeout /t 15 /nobreak >nul
+                        
+                        echo "✅ Deployment complete"
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify') {
+            steps {
                 bat '''
                     @echo off
-                    powershell -Command "Start-Sleep -Seconds 15"
-
-                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:5000/health -UseBasicParsing; if ($res.StatusCode -ne 200) { exit 1 }"
-                    if %errorlevel% neq 0 (echo Backend Unhealthy && exit /b 1)
-
-                    powershell -Command "$res = Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing; if ($res.StatusCode -ne 200) { exit 1 }"
-                    if %errorlevel% neq 0 (echo Frontend Unhealthy && exit /b 1)
-
-                    echo "Deployment Successful!"
+                    echo "========================================="
+                    echo "🔍 Verifying deployment"
+                    echo "========================================="
+                    
+                    echo "Running containers:"
+                    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                    
+                    echo ""
+                    echo "✅ Application is running at: http://localhost:3000"
+                    echo "✅ Backend API at: http://localhost:5000"
+                    echo "========================================="
                 '''
             }
         }
     }
-
+    
     post {
         success {
             echo '🎉 Pipeline completed successfully!'
+            echo "✅ Images pushed to Docker Hub with tag: ${IMAGE_TAG}"
+            echo "✅ App running at: http://localhost:3000"
+            echo "✅ Docker Hub: https://hub.docker.com/u/raushann09"
         }
         failure {
-            echo '❌ Pipeline failed. Check logs above.'
+            echo '❌ Pipeline failed. Check the logs above for details.'
         }
         always {
-            echo '🧹 Final cleanup...'
             bat '''
                 @echo off
-                docker stop test-backend test-frontend 2>nul || ver > nul
-                docker rm test-backend test-frontend 2>nul || ver > nul
-                docker image prune -f
+                echo "🧹 Performing cleanup..."
+                docker system prune -f >nul 2>&1 || exit 0
             '''
         }
     }
 }
-```
