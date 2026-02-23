@@ -8,13 +8,17 @@ pipeline {
     
     stages {
         stage('Cleanup') {
-            steps {
-                bat '''
-                    docker stop test-backend test-frontend 2>nul
-                    docker rm test-backend test-frontend 2>nul
-                '''
-            }
-        }
+    steps {
+        bat '''
+            @echo off
+            docker stop test-backend test-frontend >nul 2>&1 || echo "No containers to stop"
+            docker rm test-backend test-frontend >nul 2>&1 || echo "No containers to remove"
+            exit /b 0
+        '''
+    }
+}
+
+
         
         stage('Checkout') {
             steps {
