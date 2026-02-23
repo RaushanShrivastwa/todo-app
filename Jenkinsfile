@@ -40,7 +40,15 @@ pipeline {
                 }
             }
         }
-        
+        stage('Check Docker Access') {
+            steps {
+                bat 'docker ps'
+            }
+        }
+    
+
+
+
         stage('Test Locally') {
             steps {
                 script {
