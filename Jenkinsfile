@@ -150,7 +150,7 @@ pipeline {
             }
         }
         
-        stage('Deploy Locally') {
+   stage('Deploy Locally') {
     steps {
         dir('C:\\Users\\Raushan\\Desktop\\Project') {
             bat '''
@@ -162,20 +162,17 @@ pipeline {
                 echo Stopping existing deployment...
                 docker compose down
                 
-                echo Pulling latest images...
-                docker compose pull
-                
                 echo Starting new deployment...
                 docker compose up -d
                 
                 echo Waiting for containers to start...
-                timeout /t 15 /nobreak >nul
+                ping 127.0.0.1 -n 16 >nul
                 
                 echo Deployment complete
             '''
         }
     }
-        }
+   }
         
         stage('Verify') {
             steps {
