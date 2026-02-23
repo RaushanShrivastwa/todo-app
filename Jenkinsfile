@@ -151,27 +151,30 @@ pipeline {
         }
         
         stage('Deploy Locally') {
-            steps {
-                dir('C:\\Users\\Raushan\\Desktop\\Project') {
-                    bat '''
-                        @echo off
-                        echo "========================================="
-                        echo "🚀 Deploying application locally"
-                        echo "========================================="
-                        
-                        echo "Stopping existing deployment..."
-                        docker-compose down
-                        
-                        echo "Starting new deployment..."
-                        docker-compose up -d
-                        
-                        echo "Waiting for containers to start..."
-                        timeout /t 15 /nobreak >nul
-                        
-                        echo "✅ Deployment complete"
-                    '''
-                }
-            }
+    steps {
+        dir('C:\\Users\\Raushan\\Desktop\\Project') {
+            bat '''
+                @echo off
+                echo =========================================
+                echo Deploying application locally
+                echo =========================================
+                
+                echo Stopping existing deployment...
+                docker compose down
+                
+                echo Pulling latest images...
+                docker compose pull
+                
+                echo Starting new deployment...
+                docker compose up -d
+                
+                echo Waiting for containers to start...
+                timeout /t 15 /nobreak >nul
+                
+                echo Deployment complete
+            '''
+        }
+    }
         }
         
         stage('Verify') {
