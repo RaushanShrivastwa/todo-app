@@ -8,13 +8,17 @@ pipeline {
     
     stages {
         stage('Cleanup') {
-            steps {
-                bat '''
-                    docker stop test-backend test-frontend 2>nul
-                    docker rm test-backend test-frontend 2>nul
-                '''
-            }
-        }
+    steps {
+        bat '''
+            @echo off
+            docker stop test-backend test-frontend >nul 2>&1 || echo "No containers to stop"
+            docker rm test-backend test-frontend >nul 2>&1 || echo "No containers to remove"
+            exit /b 0
+        '''
+    }
+}
+
+
         
         stage('Checkout') {
             steps {
@@ -40,7 +44,15 @@ pipeline {
                 }
             }
         }
-        
+        stage('Check Docker Access') {
+            steps {
+                bat 'docker ps'
+            }
+        }
+    
+
+
+
         stage('Test Locally') {
             steps {
                 script {
@@ -138,29 +150,29 @@ pipeline {
             }
         }
         
-        stage('Deploy Locally') {
-            steps {
-                dir('C:\\Users\\Raushan\\Desktop\\Project') {
-                    bat '''
-                        @echo off
-                        echo "========================================="
-                        echo "🚀 Deploying application locally"
-                        echo "========================================="
-                        
-                        echo "Stopping existing deployment..."
-                        docker-compose down
-                        
-                        echo "Starting new deployment..."
-                        docker-compose up -d
-                        
-                        echo "Waiting for containers to start..."
-                        timeout /t 15 /nobreak >nul
-                        
-                        echo "✅ Deployment complete"
-                    '''
-                }
-            }
+   stage('Deploy Locally') {
+    steps {
+        dir('C:\\Users\\Raushan\\Desktop\\Project') {
+            bat '''
+                @echo off
+                echo =========================================
+                echo Deploying application locally
+                echo =========================================
+                
+                echo Stopping existing deployment...
+                docker compose down
+                
+                echo Starting new deployment...
+                docker compose up -d
+                
+                echo Waiting for containers to start...
+                ping 127.0.0.1 -n 16 >nul
+                
+                echo Deployment complete
+            '''
         }
+    }
+   }
         
         stage('Verify') {
             steps {
